@@ -1,6 +1,6 @@
 """
 AI GAME GENERATOR with Groq API
-Генератор мини-игр с использованием настоящего ИИ
+Стабильная версия для Android
 """
 
 import json
@@ -9,9 +9,6 @@ import math
 import time
 import os
 import re
-import threading
-import urllib.request
-import urllib.error
 from functools import partial
 
 from kivy.app import App
@@ -27,112 +24,113 @@ from kivy.uix.screenmanager import ScreenManager, Screen, FadeTransition, SlideT
 from kivy.uix.popup import Popup
 from kivy.uix.widget import Widget
 from kivy.graphics import Color, Rectangle, Ellipse, Line, Triangle, RoundedRectangle
-from kivy.clock import Clock
+from kivy.clock import Clock, mainthread
 from kivy.animation import Animation
 from kivy.metrics import dp, sp
 from kivy.utils import platform
 from kivy.core.window import Window
 from kivy.properties import NumericProperty, StringProperty, BooleanProperty
 
+# Безопасный импорт requests
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
 
-# ==================== GROQ КОНФИГУРАЦИЯ ====================
+# Для Android
+if platform == 'android':
+    try:
+        from android.permissions import request_permissions, Permission
+        request_permissions([Permission.INTERNET])
+    except:
+        pass
+
+
+# ==================== КОНФИГУРАЦИЯ ====================
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# Модели Groq (рекомендованные вверху)
 GROQ_MODELS = [
-    # Рекомендованные
     {"id": "llama-3.3-70b-versatile", "name": "Llama 3.3 70B", "recommended": True, "speed": "Fast", "quality": "Best"},
     {"id": "llama-3.1-70b-versatile", "name": "Llama 3.1 70B", "recommended": True, "speed": "Fast", "quality": "Excellent"},
-    {"id": "llama-3.1-8b-instant", "name": "Llama 3.1 8B Instant", "recommended": True, "speed": "Ultra Fast", "quality": "Good"},
-    
-    # Другие модели
+    {"id": "llama-3.1-8b-instant", "name": "Llama 3.1 8B", "recommended": True, "speed": "Ultra Fast", "quality": "Good"},
     {"id": "llama3-70b-8192", "name": "Llama 3 70B", "recommended": False, "speed": "Fast", "quality": "Great"},
     {"id": "llama3-8b-8192", "name": "Llama 3 8B", "recommended": False, "speed": "Very Fast", "quality": "Good"},
     {"id": "mixtral-8x7b-32768", "name": "Mixtral 8x7B", "recommended": False, "speed": "Fast", "quality": "Great"},
     {"id": "gemma2-9b-it", "name": "Gemma 2 9B", "recommended": False, "speed": "Very Fast", "quality": "Good"},
-    {"id": "gemma-7b-it", "name": "Gemma 7B", "recommended": False, "speed": "Very Fast", "quality": "Good"},
-    {"id": "llama-3.2-90b-vision-preview", "name": "Llama 3.2 90B Vision", "recommended": False, "speed": "Medium", "quality": "Best"},
-    {"id": "llama-3.2-11b-vision-preview", "name": "Llama 3.2 11B Vision", "recommended": False, "speed": "Fast", "quality": "Good"},
 ]
 
-# Промпт для генерации игры
-GAME_GENERATION_PROMPT = """You are a game designer AI. Based on the user's description, generate a unique mini-game configuration.
+GAME_PROMPT = """You are a game designer. Create a mini-game based on this idea: {prompt}
 
-User's game idea: {prompt}
-
-Generate a JSON response with the following structure (ONLY JSON, no other text):
+Return ONLY valid JSON (no markdown, no explanation):
 {{
-    "name": "Creative game name",
-    "theme": "space/fantasy/zombie/cyber/ocean/nature/candy",
-    "game_type": "shooter/runner/collector/survival/avoider",
-    "description": "Short game description",
+    "name": "Game Name",
+    "theme": "space",
+    "game_type": "shooter",
+    "description": "Short description",
     "player": {{
-        "shape": "circle/triangle/square",
-        "color": [R, G, B] (values 0-1),
-        "speed": 3-8,
-        "health": 3-5,
-        "special_ability": "shield/dash/magnet/none"
+        "shape": "triangle",
+        "color": [0.3, 0.7, 1.0],
+        "speed": 5,
+        "health": 3
     }},
     "enemies": [
-        {{
-            "name": "Enemy name",
-            "shape": "circle/triangle/square/hexagon",
-            "color": [R, G, B],
-            "speed": 0.5-3,
-            "health": 1-5,
-            "points": 10-100,
-            "behavior": "chase/patrol/zigzag/spiral"
-        }}
+        {{"name": "Enemy1", "shape": "circle", "color": [1, 0.3, 0.3], "speed": 1.5, "health": 1, "points": 10, "behavior": "chase"}}
     ],
     "items": [
-        {{
-            "name": "Item name",
-            "color": [R, G, B],
-            "effect": "heal/shield/speed/magnet/double_points/clear_enemies",
-            "value": 1-10
-        }}
+        {{"name": "Health", "color": [0.3, 1, 0.3], "effect": "heal", "value": 1}}
     ],
-    "background_colors": [[R,G,B], [R,G,B], [R,G,B]],
-    "difficulty_curve": "easy/normal/hard",
-    "special_mechanics": "Description of unique mechanics"
-}}
+    "background_colors": [[0.1, 0.1, 0.2], [0.15, 0.1, 0.25]],
+    "difficulty_curve": "normal"
+}}"""
 
-Be creative! Make the game unique based on the user's description. Include 2-4 enemy types and 3-5 item types.
-IMPORTANT: Return ONLY valid JSON, no explanations or markdown."""
+# Локальные шаблоны (fallback если нет API)
+LOCAL_THEMES = {
+    'space': {
+        'bg': [[0.05, 0.05, 0.15], [0.1, 0.05, 0.2]],
+        'player_color': [0.3, 0.8, 1],
+        'enemy_colors': [[1, 0.3, 0.3], [1, 0.5, 0.2], [0.8, 0.2, 0.8]],
+        'names': ['Cosmic', 'Stellar', 'Nebula', 'Galaxy', 'Void'],
+    },
+    'fantasy': {
+        'bg': [[0.1, 0.15, 0.1], [0.15, 0.2, 0.1]],
+        'player_color': [0.9, 0.7, 0.3],
+        'enemy_colors': [[0.5, 0.2, 0.5], [0.3, 0.5, 0.2], [0.6, 0.3, 0.3]],
+        'names': ['Dragon', 'Magic', 'Quest', 'Kingdom', 'Legend'],
+    },
+    'cyber': {
+        'bg': [[0.02, 0.02, 0.08], [0.08, 0.02, 0.12]],
+        'player_color': [0, 1, 1],
+        'enemy_colors': [[1, 0, 0.5], [1, 0.5, 0], [0.5, 0, 1]],
+        'names': ['Neon', 'Cyber', 'Hack', 'Digital', 'Matrix'],
+    },
+    'nature': {
+        'bg': [[0.1, 0.2, 0.1], [0.15, 0.25, 0.1]],
+        'player_color': [0.4, 0.8, 0.3],
+        'enemy_colors': [[0.6, 0.4, 0.2], [0.4, 0.4, 0.3], [0.5, 0.3, 0.2]],
+        'names': ['Wild', 'Forest', 'Jungle', 'Safari', 'Nature'],
+    },
+    'ocean': {
+        'bg': [[0.02, 0.1, 0.2], [0.05, 0.15, 0.25]],
+        'player_color': [0.2, 0.8, 0.7],
+        'enemy_colors': [[0.5, 0.3, 0.5], [0.3, 0.3, 0.5], [0.6, 0.2, 0.3]],
+        'names': ['Deep', 'Ocean', 'Aqua', 'Marine', 'Coral'],
+    },
+}
 
 FUN_FACTS = [
-    "Groq's LPU can process 500+ tokens per second!",
-    "The first arcade game was Computer Space (1971)",
-    "Pac-Man was designed to appeal to women",
-    "Mario has appeared in over 200 video games",
-    "The Game Boy lasted 10 hours on 4 AA batteries",
-    "Tetris was created on an Electronika 60",
-    "Sonic was designed to be 'cooler' than Mario",
-    "The PlayStation was originally a Nintendo project",
-    "Minecraft has sold over 300 million copies",
-    "The first Easter egg was in Adventure (1980)",
-    "AI is analyzing your creative vision...",
-    "Neural networks are designing your game...",
-    "Generating unique enemy behaviors...",
-    "Crafting personalized power-ups...",
-    "Building your custom game world...",
-    "Optimizing gameplay mechanics...",
-    "Almost ready to play your creation...",
-]
-
-LOADING_MESSAGES = [
-    "Connecting to Groq AI...",
-    "Sending your idea to the cloud...",
-    "AI is reading your prompt...",
-    "Generating game concept...",
-    "Designing characters...",
-    "Creating enemies...",
-    "Adding power-ups...",
-    "Balancing difficulty...",
-    "Finalizing game...",
-    "Preparing to launch...",
-    "Game ready!",
+    "Groq LPU processes 500+ tokens/sec!",
+    "First video game: 1958",
+    "Pac-Man inspired by pizza",
+    "Mario was called Jumpman",
+    "Tetris made in USSR",
+    "Minecraft world 8x Earth size",
+    "Game Boy survived a bombing",
+    "AI analyzing your idea...",
+    "Creating unique world...",
+    "Designing enemies...",
+    "Almost ready...",
 ]
 
 
@@ -144,22 +142,19 @@ def get_data_path():
             from android.storage import app_storage_path
             return app_storage_path()
         except:
-            pass
+            return '/data/data/org.groq.aigamegen/files'
     return os.path.expanduser('~')
 
 
-def lerp(a, b, t):
-    return a + (b - a) * t
-
-
-# ==================== GROQ API КЛИЕНТ ====================
+# ==================== GROQ API ====================
 
 class GroqClient:
     def __init__(self):
         self.api_key = ""
-        self.model = "llama-3.3-70b-versatile"
-        self.last_error = None
-        self.last_response = None
+        self.model = "llama-3.1-8b-instant"
+        self.is_processing = False
+        self.result = None
+        self.error = None
     
     def set_api_key(self, key):
         self.api_key = key.strip()
@@ -167,101 +162,185 @@ class GroqClient:
     def set_model(self, model_id):
         self.model = model_id
     
-    def generate_game(self, prompt, callback):
-        """Асинхронная генерация игры через Groq API"""
-        def api_call():
-            try:
-                full_prompt = GAME_GENERATION_PROMPT.format(prompt=prompt)
-                
-                data = json.dumps({
-                    "model": self.model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "You are a creative game designer. Always respond with valid JSON only."
-                        },
-                        {
-                            "role": "user", 
-                            "content": full_prompt
-                        }
-                    ],
-                    "temperature": 0.8,
-                    "max_tokens": 2000
-                }).encode('utf-8')
-                
-                req = urllib.request.Request(
-                    GROQ_API_URL,
-                    data=data,
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    }
-                )
-                
-                with urllib.request.urlopen(req, timeout=30) as response:
-                    result = json.loads(response.read().decode('utf-8'))
-                    content = result['choices'][0]['message']['content']
-                    
-                    # Извлекаем JSON из ответа
-                    json_match = re.search(r'\{[\s\S]*\}', content)
-                    if json_match:
-                        game_config = json.loads(json_match.group())
-                        self.last_response = game_config
-                        Clock.schedule_once(lambda dt: callback(True, game_config), 0)
-                    else:
-                        Clock.schedule_once(lambda dt: callback(False, "Invalid AI response"), 0)
-                        
-            except urllib.error.HTTPError as e:
-                error_body = e.read().decode('utf-8')
-                try:
-                    error_json = json.loads(error_body)
-                    error_msg = error_json.get('error', {}).get('message', str(e))
-                except:
-                    error_msg = str(e)
-                self.last_error = error_msg
-                Clock.schedule_once(lambda dt: callback(False, error_msg), 0)
-                
-            except Exception as e:
-                self.last_error = str(e)
-                Clock.schedule_once(lambda dt: callback(False, str(e)), 0)
+    def generate_game_sync(self, prompt):
+        """Синхронная генерация (вызывается из Clock.schedule)"""
+        if not HAS_REQUESTS:
+            return False, "requests library not available"
         
-        thread = threading.Thread(target=api_call)
-        thread.daemon = True
-        thread.start()
+        if not self.api_key:
+            return False, "API key not set"
+        
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            data = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "You are a game designer. Return only valid JSON."},
+                    {"role": "user", "content": GAME_PROMPT.format(prompt=prompt)}
+                ],
+                "temperature": 0.8,
+                "max_tokens": 1500
+            }
+            
+            response = requests.post(
+                GROQ_API_URL,
+                headers=headers,
+                json=data,
+                timeout=30
+            )
+            
+            if response.status_code == 401:
+                return False, "Invalid API Key"
+            elif response.status_code != 200:
+                return False, f"API Error: {response.status_code}"
+            
+            result = response.json()
+            content = result['choices'][0]['message']['content']
+            
+            # Извлекаем JSON
+            json_match = re.search(r'\{[\s\S]*\}', content)
+            if json_match:
+                game_config = json.loads(json_match.group())
+                return True, game_config
+            else:
+                return False, "Invalid AI response format"
+                
+        except requests.exceptions.Timeout:
+            return False, "Request timeout"
+        except requests.exceptions.ConnectionError:
+            return False, "No internet connection"
+        except json.JSONDecodeError:
+            return False, "Failed to parse AI response"
+        except Exception as e:
+            return False, str(e)[:50]
     
-    def test_connection(self, callback):
-        """Тест подключения к API"""
-        def test_call():
-            try:
-                data = json.dumps({
-                    "model": self.model,
-                    "messages": [{"role": "user", "content": "Say 'OK' if you can hear me."}],
-                    "max_tokens": 10
-                }).encode('utf-8')
-                
-                req = urllib.request.Request(
-                    GROQ_API_URL,
-                    data=data,
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    }
-                )
-                
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    Clock.schedule_once(lambda dt: callback(True, "Connection successful!"), 0)
-                    
-            except urllib.error.HTTPError as e:
-                if e.code == 401:
-                    Clock.schedule_once(lambda dt: callback(False, "Invalid API Key"), 0)
-                else:
-                    Clock.schedule_once(lambda dt: callback(False, f"Error: {e.code}"), 0)
-            except Exception as e:
-                Clock.schedule_once(lambda dt: callback(False, str(e)), 0)
+    def test_connection_sync(self):
+        """Синхронный тест соединения"""
+        if not HAS_REQUESTS:
+            return False, "Install 'requests' library"
         
-        thread = threading.Thread(target=test_call)
-        thread.daemon = True
-        thread.start()
+        if not self.api_key:
+            return False, "Enter API key first"
+        
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            data = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "max_tokens": 5
+            }
+            
+            response = requests.post(
+                GROQ_API_URL,
+                headers=headers,
+                json=data,
+                timeout=10
+            )
+            
+            if response.status_code == 401:
+                return False, "Invalid API Key"
+            elif response.status_code == 200:
+                return True, "Connected!"
+            else:
+                return False, f"Error: {response.status_code}"
+                
+        except requests.exceptions.Timeout:
+            return False, "Timeout"
+        except requests.exceptions.ConnectionError:
+            return False, "No internet"
+        except Exception as e:
+            return False, str(e)[:30]
+
+
+def generate_local_game(prompt):
+    """Локальная генерация без API"""
+    prompt_lower = prompt.lower()
+    
+    # Определяем тему
+    theme = 'space'
+    for theme_name in LOCAL_THEMES.keys():
+        if theme_name in prompt_lower:
+            theme = theme_name
+            break
+    
+    # Ключевые слова
+    if any(w in prompt_lower for w in ['ocean', 'sea', 'fish', 'water', 'море', 'океан']):
+        theme = 'ocean'
+    elif any(w in prompt_lower for w in ['forest', 'nature', 'animal', 'лес', 'природа']):
+        theme = 'nature'
+    elif any(w in prompt_lower for w in ['cyber', 'neon', 'robot', 'future', 'кибер', 'неон']):
+        theme = 'cyber'
+    elif any(w in prompt_lower for w in ['magic', 'dragon', 'fantasy', 'wizard', 'магия', 'дракон']):
+        theme = 'fantasy'
+    
+    theme_data = LOCAL_THEMES[theme]
+    
+    # Тип игры
+    game_type = 'shooter'
+    if any(w in prompt_lower for w in ['collect', 'catch', 'собирать', 'ловить']):
+        game_type = 'collector'
+    elif any(w in prompt_lower for w in ['avoid', 'dodge', 'escape', 'избегать', 'убегать']):
+        game_type = 'avoider'
+    elif any(w in prompt_lower for w in ['survive', 'survival', 'выживание', 'выжить']):
+        game_type = 'survival'
+    
+    # Генерируем название
+    name_prefix = random.choice(['Super', 'Ultra', 'Mega', 'Epic', 'Turbo', 'Hyper'])
+    name_middle = random.choice(theme_data['names'])
+    name_suffix = random.choice(['Quest', 'Rush', 'Blitz', 'Force', 'Strike', 'Arena'])
+    game_name = f"{name_prefix} {name_middle} {name_suffix}"
+    
+    # Генерируем врагов
+    enemies = []
+    behaviors = ['chase', 'patrol', 'zigzag', 'spiral']
+    shapes = ['circle', 'square', 'triangle']
+    
+    for i, color in enumerate(theme_data['enemy_colors'][:3]):
+        enemies.append({
+            'name': f"Enemy {i+1}",
+            'shape': random.choice(shapes),
+            'color': color,
+            'speed': 0.8 + i * 0.4,
+            'health': 1 + i,
+            'points': 10 + i * 15,
+            'behavior': behaviors[i % len(behaviors)]
+        })
+    
+    # Генерируем предметы
+    items = [
+        {'name': 'Health Pack', 'color': [0.3, 1, 0.3], 'effect': 'heal', 'value': 1},
+        {'name': 'Shield', 'color': [0.3, 0.7, 1], 'effect': 'shield', 'value': 3},
+        {'name': 'Speed Boost', 'color': [1, 1, 0.3], 'effect': 'speed', 'value': 5},
+        {'name': 'Magnet', 'color': [1, 0.5, 1], 'effect': 'magnet', 'value': 5},
+        {'name': 'Double Points', 'color': [1, 0.8, 0.2], 'effect': 'double_points', 'value': 10},
+    ]
+    
+    return {
+        'name': game_name,
+        'theme': theme,
+        'game_type': game_type,
+        'description': f"AI-generated {theme} {game_type} game",
+        'player': {
+            'shape': 'triangle',
+            'color': theme_data['player_color'],
+            'speed': 5,
+            'health': 3
+        },
+        'enemies': enemies,
+        'items': items,
+        'background_colors': theme_data['bg'],
+        'difficulty_curve': 'normal',
+        'created_at': time.time(),
+        'ai_generated': False
+    }
 
 
 # ==================== ИГРОВЫЕ ОБЪЕКТЫ ====================
@@ -291,16 +370,14 @@ class GameObject:
 class Player(GameObject):
     def __init__(self, x, y, config):
         color = config.get('color', [0.3, 0.7, 1])
-        super().__init__(x, y, dp(30), color, config.get('shape', 'circle'))
+        super().__init__(x, y, dp(30), color, config.get('shape', 'triangle'))
         self.max_health = config.get('health', 3)
         self.health = self.max_health
         self.speed = config.get('speed', 5)
-        self.special_ability = config.get('special_ability', 'none')
         self.shield = 0
         self.magnet = 0
         self.double_points = 0
         self.invincible = 0
-        self.dash_cooldown = 0
         self.trail = []
     
     def update(self, dt):
@@ -309,7 +386,6 @@ class Player(GameObject):
         self.magnet = max(0, self.magnet - dt)
         self.double_points = max(0, self.double_points - dt)
         self.invincible = max(0, self.invincible - dt)
-        self.dash_cooldown = max(0, self.dash_cooldown - dt)
         
         self.trail.append((self.x, self.y, time.time()))
         self.trail = [(x, y, t) for x, y, t in self.trail if time.time() - t < 0.3]
@@ -321,16 +397,6 @@ class Player(GameObject):
         self.health -= 1
         self.invincible = 1.5
         return self.health <= 0
-    
-    def use_ability(self):
-        if self.special_ability == 'dash' and self.dash_cooldown <= 0:
-            self.dash_cooldown = 3
-            return 'dash'
-        elif self.special_ability == 'shield' and self.dash_cooldown <= 0:
-            self.shield = 3
-            self.dash_cooldown = 5
-            return 'shield'
-        return None
 
 
 class Enemy(GameObject):
@@ -343,7 +409,7 @@ class Enemy(GameObject):
         self.max_health = self.health
         self.points = config.get('points', 10)
         self.name = config.get('name', 'Enemy')
-        self.behavior = config.get('behavior', random.choice(['chase', 'patrol', 'zigzag', 'spiral']))
+        self.behavior = config.get('behavior', 'chase')
         self.timer = 0
     
     def update(self, dt, target_x=None, target_y=None):
@@ -365,6 +431,8 @@ class Enemy(GameObject):
         elif self.behavior == 'spiral':
             self.vx = math.cos(self.timer * 3) * self.speed * dp(50)
             self.vy = math.sin(self.timer * 3) * self.speed * dp(50) - dp(30)
+        else:
+            self.vy = -self.speed * dp(40)
         
         super().update(dt)
     
@@ -377,7 +445,6 @@ class Item(GameObject):
     def __init__(self, x, y, config):
         color = config.get('color', [1, 1, 0.3])
         super().__init__(x, y, dp(20), color, 'circle')
-        self.item_type = config.get('type', 'heal')
         self.effect = config.get('effect', 'heal')
         self.value = config.get('value', 1)
         self.name = config.get('name', 'Item')
@@ -394,7 +461,6 @@ class Bullet(GameObject):
         super().__init__(x, y, dp(8), color, 'circle')
         self.vx = vx
         self.vy = vy
-        self.damage = 1
 
 
 class Particle:
@@ -432,7 +498,6 @@ class GameEngine(Widget):
         
         self.game_time = 0
         self.spawn_timer = 0
-        self.level_timer = 0
         self.enemies_killed = 0
         self.items_collected = 0
         self.combo = 0
@@ -445,21 +510,11 @@ class GameEngine(Widget):
         self.touch_pos = (0, 0)
         
         self.stars = []
-        self.setup_background()
-        
-        self.bind(size=self.on_size_change)
+        self.bind(size=self.setup_stars)
     
-    def on_size_change(self, *args):
-        self.setup_background()
-        if self.player:
-            self.player.x = max(self.player.size/2, 
-                               min(self.width - self.player.size/2, self.player.x))
-            self.player.y = max(self.player.size/2, 
-                               min(self.height - self.player.size/2, self.player.y))
-    
-    def setup_background(self):
+    def setup_stars(self, *args):
         self.stars = []
-        for _ in range(60):
+        for _ in range(50):
             self.stars.append({
                 'x': random.uniform(0, max(100, self.width)),
                 'y': random.uniform(0, max(100, self.height)),
@@ -469,12 +524,10 @@ class GameEngine(Widget):
             })
     
     def start_game(self):
+        self.setup_stars()
+        
         player_config = self.config.get('player', {})
-        self.player = Player(
-            self.width / 2,
-            self.height * 0.2,
-            player_config
-        )
+        self.player = Player(self.width / 2, self.height * 0.2, player_config)
         
         self.enemies = []
         self.items = []
@@ -485,7 +538,6 @@ class GameEngine(Widget):
         self.level = 1
         self.game_time = 0
         self.spawn_timer = 0
-        self.level_timer = 0
         self.enemies_killed = 0
         self.items_collected = 0
         self.combo = 0
@@ -501,7 +553,6 @@ class GameEngine(Widget):
         
         self.game_time += dt
         self.spawn_timer += dt
-        self.level_timer += dt
         self.combo_timer -= dt
         
         if self.combo_timer <= 0:
@@ -509,7 +560,15 @@ class GameEngine(Widget):
         
         # Уровни
         if self.enemies_killed >= 5 + self.level * 3 and not self.enemies:
-            self.level_up()
+            self.level += 1
+            self.enemies_killed = 0
+            self.score += self.level * 100
+            for _ in range(20):
+                self.particles.append(Particle(
+                    random.uniform(0, self.width),
+                    random.uniform(0, self.height),
+                    (1, 1, 0.3)
+                ))
         
         # Управление
         if self.touching:
@@ -523,29 +582,22 @@ class GameEngine(Widget):
                 self.player.y += (dy / dist) * min(speed, dist)
         
         # Границы
-        self.player.x = max(self.player.size/2, 
-                           min(self.width - self.player.size/2, self.player.x))
-        self.player.y = max(self.player.size/2, 
-                           min(self.height - self.player.size/2, self.player.y))
+        self.player.x = max(self.player.size/2, min(self.width - self.player.size/2, self.player.x))
+        self.player.y = max(self.player.size/2, min(self.height - self.player.size/2, self.player.y))
         
         self.player.update(dt)
         
-        # Автострельба
-        game_type = self.config.get('game_type', 'collector')
-        if game_type == 'shooter' and int(self.game_time * 5) % 2 == 0:
-            if len(self.bullets) < 10:
+        # Автострельба для shooter
+        if self.config.get('game_type') == 'shooter':
+            if int(self.game_time * 5) % 2 == 0 and len(self.bullets) < 10:
                 self.bullets.append(Bullet(
                     self.player.x, self.player.y + self.player.size/2,
-                    0, dp(400),
-                    self.player.color
+                    0, dp(400), self.player.color
                 ))
         
         # Спавн врагов
-        difficulty = self.config.get('difficulty_curve', 'normal')
-        spawn_rate = {'easy': 2.5, 'normal': 2.0, 'hard': 1.5}.get(difficulty, 2.0)
-        spawn_rate /= (1 + self.level * 0.1)
-        
-        if self.spawn_timer > spawn_rate and len(self.enemies) < 15:
+        spawn_rate = 2.0 / (1 + self.level * 0.1)
+        if self.spawn_timer > spawn_rate and len(self.enemies) < 12:
             self.spawn_enemy()
             self.spawn_timer = 0
         
@@ -553,7 +605,7 @@ class GameEngine(Widget):
         if random.random() < 0.005:
             self.spawn_item()
         
-        # Враги
+        # Обновление врагов
         for enemy in self.enemies[:]:
             enemy.update(dt, self.player.x, self.player.y)
             
@@ -565,10 +617,10 @@ class GameEngine(Widget):
                 if self.player.take_damage():
                     self.game_over = True
                 else:
-                    self.spawn_particles(enemy.x, enemy.y, enemy.color, 10)
+                    self.spawn_particles(enemy.x, enemy.y, enemy.color)
                     self.enemies.remove(enemy)
         
-        # Предметы
+        # Обновление предметов
         for item in self.items[:]:
             if self.player.magnet > 0:
                 dx = self.player.x - item.x
@@ -588,27 +640,27 @@ class GameEngine(Widget):
                 self.collect_item(item)
                 self.items.remove(item)
         
-        # Пули
+        # Обновление пуль
         for bullet in self.bullets[:]:
             bullet.update(dt)
             
-            if bullet.y > self.height + bullet.size or bullet.y < -bullet.size:
+            if bullet.y > self.height + bullet.size:
                 self.bullets.remove(bullet)
                 continue
             
             for enemy in self.enemies[:]:
                 if bullet.collides_with(enemy):
-                    if enemy.take_damage(bullet.damage):
+                    if enemy.take_damage():
                         self.kill_enemy(enemy)
                     if bullet in self.bullets:
                         self.bullets.remove(bullet)
-                    self.spawn_particles(bullet.x, bullet.y, bullet.color, 5)
+                    self.spawn_particles(bullet.x, bullet.y, bullet.color)
                     break
         
-        # Частицы
+        # Обновление частиц
         self.particles = [p for p in self.particles if p.update(dt)]
         
-        # Звёзды
+        # Обновление звёзд
         for star in self.stars:
             star['y'] -= star['speed'] * dt
             if star['y'] < 0:
@@ -617,41 +669,29 @@ class GameEngine(Widget):
         
         self.draw()
     
-    def level_up(self):
-        self.level += 1
-        self.enemies_killed = 0
-        self.level_timer = 0
-        self.score += self.level * 100
-        
-        for _ in range(30):
-            self.particles.append(Particle(
-                random.uniform(0, self.width),
-                random.uniform(0, self.height),
-                (1, 1, 0.3)
-            ))
-    
     def spawn_enemy(self):
         enemies_config = self.config.get('enemies', [])
         if not enemies_config:
-            enemies_config = [{'name': 'Enemy', 'color': [1, 0.3, 0.3], 'speed': 1, 'health': 1, 'points': 10}]
+            enemies_config = [{'color': [1, 0.3, 0.3], 'speed': 1, 'health': 1, 'points': 10}]
         
-        enemy_config = random.choice(enemies_config).copy()
-        enemy_config['speed'] *= (1 + self.level * 0.1)
+        config = random.choice(enemies_config).copy()
+        config['speed'] = config.get('speed', 1) * (1 + self.level * 0.1)
         
         x = random.uniform(dp(30), self.width - dp(30))
         y = self.height + dp(30)
         
-        self.enemies.append(Enemy(x, y, enemy_config))
+        self.enemies.append(Enemy(x, y, config))
     
     def spawn_item(self):
         items_config = self.config.get('items', [])
         if not items_config:
-            items_config = [{'name': 'Health', 'color': [0.3, 1, 0.3], 'effect': 'heal', 'value': 1}]
+            items_config = [{'color': [0.3, 1, 0.3], 'effect': 'heal', 'value': 1}]
         
-        item_config = random.choice(items_config).copy()
+        config = random.choice(items_config)
         x = random.uniform(dp(30), self.width - dp(30))
         y = self.height + dp(20)
-        self.items.append(Item(x, y, item_config))
+        
+        self.items.append(Item(x, y, config))
     
     def kill_enemy(self, enemy):
         points = enemy.points
@@ -661,13 +701,11 @@ class GameEngine(Widget):
         self.combo += 1
         self.combo_timer = 2.0
         self.max_combo = max(self.max_combo, self.combo)
-        
-        points *= (1 + self.combo * 0.1)
-        self.score += int(points)
-        
+        points = int(points * (1 + self.combo * 0.1))
+        self.score += points
         self.enemies_killed += 1
-        self.spawn_particles(enemy.x, enemy.y, enemy.color, 15)
         
+        self.spawn_particles(enemy.x, enemy.y, enemy.color)
         if enemy in self.enemies:
             self.enemies.remove(enemy)
     
@@ -675,27 +713,24 @@ class GameEngine(Widget):
         self.items_collected += 1
         self.score += 25
         
-        effect = item.effect
-        value = item.value
+        if item.effect == 'heal':
+            self.player.health = min(self.player.max_health, self.player.health + item.value)
+        elif item.effect == 'shield':
+            self.player.shield += item.value
+        elif item.effect == 'speed':
+            self.player.speed *= 1.2
+        elif item.effect == 'magnet':
+            self.player.magnet += item.value
+        elif item.effect == 'double_points':
+            self.player.double_points += item.value
+        elif item.effect == 'clear_enemies':
+            for e in self.enemies[:]:
+                self.kill_enemy(e)
         
-        if effect == 'heal':
-            self.player.health = min(self.player.max_health, self.player.health + value)
-        elif effect == 'shield':
-            self.player.shield += value
-        elif effect == 'speed':
-            self.player.speed *= 1.3
-        elif effect == 'magnet':
-            self.player.magnet += value
-        elif effect == 'double_points':
-            self.player.double_points += value
-        elif effect == 'clear_enemies':
-            for enemy in self.enemies[:]:
-                self.kill_enemy(enemy)
-        
-        self.spawn_particles(item.x, item.y, item.color, 10)
+        self.spawn_particles(item.x, item.y, item.color)
     
-    def spawn_particles(self, x, y, color, count):
-        for _ in range(count):
+    def spawn_particles(self, x, y, color):
+        for _ in range(10):
             self.particles.append(Particle(x, y, color))
     
     def on_touch_down(self, touch):
@@ -718,99 +753,77 @@ class GameEngine(Widget):
     def draw(self):
         self.canvas.clear()
         
-        bg_colors = self.config.get('background_colors', [[0.1, 0.1, 0.2]])
-        if not bg_colors:
-            bg_colors = [[0.1, 0.1, 0.2]]
+        bg = self.config.get('background_colors', [[0.1, 0.1, 0.2]])[0]
         
         with self.canvas:
             # Фон
-            bg = bg_colors[0]
             Color(bg[0], bg[1], bg[2], 1)
             Rectangle(pos=self.pos, size=self.size)
-            
-            # Градиент
-            if len(bg_colors) > 1:
-                bg2 = bg_colors[1]
-                Color(bg2[0], bg2[1], bg2[2], 0.5)
-                Rectangle(pos=(self.x, self.y + self.height * 0.5), 
-                         size=(self.width, self.height * 0.5))
             
             # Звёзды
             for star in self.stars:
                 b = star['brightness']
                 Color(b, b, b * 1.1, b)
-                Ellipse(pos=(star['x'], star['y']), 
-                       size=(star['size'], star['size']))
+                Ellipse(pos=(star['x'], star['y']), size=(star['size'], star['size']))
             
             # Частицы
             for p in self.particles:
-                c = p.color
-                Color(c[0], c[1], c[2], p.life)
-                Ellipse(pos=(p.x - p.size/2, p.y - p.size/2),
-                       size=(p.size, p.size))
+                Color(*p.color, p.life)
+                Ellipse(pos=(p.x - p.size/2, p.y - p.size/2), size=(p.size, p.size))
             
             # Предметы
             for item in self.items:
                 pulse = 1 + 0.2 * math.sin(item.pulse)
                 size = item.size * pulse
-                c = item.color
-                Color(c[0], c[1], c[2], 0.3)
-                Ellipse(pos=(item.x - size, item.y - size),
-                       size=(size * 2, size * 2))
-                Color(c[0], c[1], c[2], 1)
-                Ellipse(pos=(item.x - item.size/2, item.y - item.size/2),
-                       size=(item.size, item.size))
+                Color(*item.color, 0.3)
+                Ellipse(pos=(item.x - size, item.y - size), size=(size * 2, size * 2))
+                Color(*item.color, 1)
+                Ellipse(pos=(item.x - item.size/2, item.y - item.size/2), size=(item.size, item.size))
             
             # Пули
             for bullet in self.bullets:
-                c = bullet.color
-                Color(c[0], c[1], c[2], 1)
-                Ellipse(pos=(bullet.x - bullet.size/2, bullet.y - bullet.size/2),
+                Color(*bullet.color, 1)
+                Ellipse(pos=(bullet.x - bullet.size/2, bullet.y - bullet.size/2), 
                        size=(bullet.size, bullet.size))
             
             # Враги
             for enemy in self.enemies:
-                c = enemy.color
                 Color(0, 0, 0, 0.3)
                 self.draw_shape(enemy.shape, enemy.x + 3, enemy.y - 3, enemy.size)
-                Color(c[0], c[1], c[2], 1)
+                Color(*enemy.color, 1)
                 self.draw_shape(enemy.shape, enemy.x, enemy.y, enemy.size)
                 
+                # HP bar
                 if enemy.health < enemy.max_health:
-                    bar_width = enemy.size
-                    bar_height = dp(4)
+                    bw = enemy.size
                     Color(0.3, 0.3, 0.3, 0.8)
-                    Rectangle(pos=(enemy.x - bar_width/2, enemy.y + enemy.size/2 + 5),
-                             size=(bar_width, bar_height))
+                    Rectangle(pos=(enemy.x - bw/2, enemy.y + enemy.size/2 + 5), size=(bw, dp(4)))
                     Color(0.2, 0.8, 0.2, 1)
-                    Rectangle(pos=(enemy.x - bar_width/2, enemy.y + enemy.size/2 + 5),
-                             size=(bar_width * (enemy.health / enemy.max_health), bar_height))
+                    Rectangle(pos=(enemy.x - bw/2, enemy.y + enemy.size/2 + 5), 
+                             size=(bw * enemy.health / enemy.max_health, dp(4)))
             
             # Игрок
             if self.player:
                 # Trail
                 for i, (tx, ty, _) in enumerate(self.player.trail):
-                    alpha = i / len(self.player.trail) * 0.3
-                    c = self.player.color
-                    Color(c[0], c[1], c[2], alpha)
+                    alpha = i / max(1, len(self.player.trail)) * 0.3
+                    Color(*self.player.color, alpha)
                     size = self.player.size * (0.3 + 0.7 * i / max(1, len(self.player.trail)))
                     self.draw_shape(self.player.shape, tx, ty, size)
                 
-                # Свечение
-                c = self.player.color
-                glow_size = self.player.size * 1.5
-                Color(c[0], c[1], c[2], 0.2)
-                Ellipse(pos=(self.player.x - glow_size/2, self.player.y - glow_size/2),
-                       size=(glow_size, glow_size))
+                # Glow
+                Color(*self.player.color, 0.2)
+                glow = self.player.size * 1.5
+                Ellipse(pos=(self.player.x - glow/2, self.player.y - glow/2), size=(glow, glow))
                 
-                # Игрок
+                # Player
                 if self.player.invincible > 0 and int(self.player.invincible * 10) % 2:
-                    Color(c[0], c[1], c[2], 0.5)
+                    Color(*self.player.color, 0.5)
                 else:
-                    Color(c[0], c[1], c[2], 1)
+                    Color(*self.player.color, 1)
                 self.draw_shape(self.player.shape, self.player.x, self.player.y, self.player.size)
                 
-                # Щит
+                # Shield
                 if self.player.shield > 0:
                     Color(0.3, 0.7, 1, 0.4)
                     Line(circle=(self.player.x, self.player.y, self.player.size * 0.8), width=2)
@@ -819,16 +832,12 @@ class GameEngine(Widget):
         half = size / 2
         if shape == 'circle':
             Ellipse(pos=(x - half, y - half), size=(size, size))
-        elif shape == 'square' or shape == 'rectangle':
+        elif shape == 'square':
             Rectangle(pos=(x - half, y - half), size=(size, size))
         elif shape == 'triangle':
-            Triangle(points=[
-                x, y + half,
-                x - half, y - half,
-                x + half, y - half
-            ])
-        elif shape == 'hexagon':
-            Ellipse(pos=(x - half * 0.9, y - half * 0.9), size=(size * 0.9, size * 0.9))
+            Triangle(points=[x, y + half, x - half, y - half, x + half, y - half])
+        else:
+            Ellipse(pos=(x - half, y - half), size=(size, size))
 
 
 # ==================== ЭКРАНЫ ====================
@@ -846,238 +855,140 @@ class BaseScreen(Screen):
         self.bg.size = self.size
 
 
-# ==================== ЭКРАН НАСТРОЙКИ API ====================
-
 class SettingsScreen(BaseScreen):
     def __init__(self, app, **kwargs):
         super().__init__(**kwargs)
         self.app = app
         self.selected_model = GROQ_MODELS[0]['id']
-        self.filtered_models = GROQ_MODELS.copy()
         
-        layout = BoxLayout(orientation='vertical', padding=dp(20), spacing=dp(8))
+        layout = BoxLayout(orientation='vertical', padding=dp(15), spacing=dp(8))
         
-        # Заголовок
-        header = BoxLayout(size_hint=(1, 0.08))
-        
-        back_btn = Button(
-            text='<',
-            size_hint=(0.15, 1),
-            font_size=sp(24),
-            background_color=(0.3, 0.3, 0.4, 1),
-            background_normal=''
-        )
+        # Header
+        header = BoxLayout(size_hint=(1, 0.07))
+        back_btn = Button(text='<', size_hint=(0.15, 1), font_size=sp(22),
+                         background_color=(0.3, 0.3, 0.4, 1), background_normal='')
         back_btn.bind(on_release=lambda x: self.go_back())
         header.add_widget(back_btn)
-        
-        header.add_widget(Label(
-            text='API Settings',
-            font_size=sp(22),
-            color=(0.8, 0.8, 1, 1),
-            bold=True
-        ))
-        
+        header.add_widget(Label(text='API Settings', font_size=sp(20), color=(0.8, 0.8, 1, 1)))
         layout.add_widget(header)
         
-        # Красивый блок для API ключа
-        api_box = BoxLayout(orientation='vertical', size_hint=(1, 0.25), spacing=dp(5))
-        
-        # Заголовок блока
-        api_header = BoxLayout(size_hint=(1, 0.25))
-        api_header.add_widget(Label(
-            text='GROQ API Key',
-            font_size=sp(16),
-            color=(0.5, 0.8, 1, 1),
-            halign='left',
-            bold=True
-        ))
-        
-        self.status_indicator = Label(
-            text='',
-            font_size=sp(12),
-            size_hint=(0.4, 1),
-            color=(0.5, 0.5, 0.5, 1)
-        )
-        api_header.add_widget(self.status_indicator)
-        api_box.add_widget(api_header)
-        
-        # Поле ввода ключа с красивым фоном
-        key_container = FloatLayout(size_hint=(1, 0.45))
-        
-        with key_container.canvas.before:
-            Color(0.12, 0.12, 0.18, 1)
-            self.key_bg = RoundedRectangle(
-                pos=key_container.pos,
-                size=key_container.size,
-                radius=[dp(10)]
-            )
-        key_container.bind(
-            pos=lambda *x: setattr(self.key_bg, 'pos', key_container.pos),
-            size=lambda *x: setattr(self.key_bg, 'size', key_container.size)
-        )
+        # API Key section
+        layout.add_widget(Label(text='Groq API Key:', font_size=sp(14), 
+                                size_hint=(1, 0.04), color=(0.5, 0.8, 1, 1)))
         
         self.api_key_input = TextInput(
-            hint_text='gsk_xxxxxxxxxxxxxxxxx...',
+            hint_text='gsk_xxxxx...',
             multiline=False,
             password=True,
             font_size=sp(14),
-            size_hint=(0.98, 0.9),
-            pos_hint={'center_x': 0.5, 'center_y': 0.5},
-            background_color=(0, 0, 0, 0),
-            foreground_color=(1, 1, 1, 1),
-            cursor_color=(0.5, 0.8, 1, 1),
-            hint_text_color=(0.4, 0.4, 0.5, 1),
-            padding=[dp(15), dp(10)]
-        )
-        
-        # Загружаем сохранённый ключ
-        saved_key = self.app.load_api_key()
-        if saved_key:
-            self.api_key_input.text = saved_key
-        
-        key_container.add_widget(self.api_key_input)
-        api_box.add_widget(key_container)
-        
-        # Кнопки для ключа
-        key_buttons = BoxLayout(size_hint=(1, 0.3), spacing=dp(10))
-        
-        show_btn = Button(
-            text='Show/Hide',
-            font_size=sp(12),
-            background_color=(0.3, 0.3, 0.4, 1),
-            background_normal=''
-        )
-        show_btn.bind(on_release=lambda x: self.toggle_password())
-        key_buttons.add_widget(show_btn)
-        
-        test_btn = Button(
-            text='Test Connection',
-            font_size=sp(12),
-            background_color=(0.3, 0.5, 0.6, 1),
-            background_normal=''
-        )
-        test_btn.bind(on_release=lambda x: self.test_connection())
-        key_buttons.add_widget(test_btn)
-        
-        save_btn = Button(
-            text='Save Key',
-            font_size=sp(12),
-            background_color=(0.3, 0.5, 0.3, 1),
-            background_normal=''
-        )
-        save_btn.bind(on_release=lambda x: self.save_key())
-        key_buttons.add_widget(save_btn)
-        
-        api_box.add_widget(key_buttons)
-        layout.add_widget(api_box)
-        
-        # Получить ключ
-        get_key_btn = Button(
-            text='Get FREE API Key at console.groq.com',
-            font_size=sp(12),
-            size_hint=(1, 0.04),
-            background_color=(0.2, 0.4, 0.5, 1),
-            background_normal=''
-        )
-        layout.add_widget(get_key_btn)
-        
-        # Выбор модели
-        layout.add_widget(Label(
-            text='Select AI Model:',
-            font_size=sp(16),
-            size_hint=(1, 0.04),
-            color=(0.5, 0.8, 1, 1),
-            halign='left',
-            bold=True
-        ))
-        
-        # Поиск моделей
-        search_box = BoxLayout(size_hint=(1, 0.06), spacing=dp(5))
-        
-        self.model_search = TextInput(
-            hint_text='Search models...',
-            multiline=False,
-            font_size=sp(14),
-            size_hint=(1, 1),
+            size_hint=(1, 0.08),
             background_color=(0.12, 0.12, 0.18, 1),
             foreground_color=(1, 1, 1, 1),
             cursor_color=(0.5, 0.8, 1, 1)
         )
+        saved_key = self.app.load_api_key()
+        if saved_key:
+            self.api_key_input.text = saved_key
+        layout.add_widget(self.api_key_input)
+        
+        # Status
+        self.status_label = Label(text='', font_size=sp(12), size_hint=(1, 0.04),
+                                  color=(0.5, 0.5, 0.5, 1))
+        layout.add_widget(self.status_label)
+        
+        # Buttons
+        btn_row = BoxLayout(size_hint=(1, 0.07), spacing=dp(10))
+        
+        show_btn = Button(text='Show/Hide', font_size=sp(12),
+                         background_color=(0.3, 0.3, 0.4, 1), background_normal='')
+        show_btn.bind(on_release=lambda x: self.toggle_password())
+        btn_row.add_widget(show_btn)
+        
+        test_btn = Button(text='Test', font_size=sp(12),
+                         background_color=(0.3, 0.5, 0.6, 1), background_normal='')
+        test_btn.bind(on_release=lambda x: self.test_connection())
+        btn_row.add_widget(test_btn)
+        
+        save_btn = Button(text='Save', font_size=sp(12),
+                         background_color=(0.3, 0.5, 0.3, 1), background_normal='')
+        save_btn.bind(on_release=lambda x: self.save_key())
+        btn_row.add_widget(save_btn)
+        
+        layout.add_widget(btn_row)
+        
+        # Get key info
+        layout.add_widget(Label(text='Get FREE key: console.groq.com', font_size=sp(11),
+                                size_hint=(1, 0.03), color=(0.4, 0.6, 0.8, 1)))
+        
+        # Model selection
+        layout.add_widget(Label(text='Select Model:', font_size=sp(14),
+                                size_hint=(1, 0.04), color=(0.5, 0.8, 1, 1)))
+        
+        # Search
+        self.model_search = TextInput(
+            hint_text='Search models...',
+            multiline=False,
+            font_size=sp(13),
+            size_hint=(1, 0.06),
+            background_color=(0.12, 0.12, 0.18, 1),
+            foreground_color=(1, 1, 1, 1)
+        )
         self.model_search.bind(text=self.filter_models)
-        search_box.add_widget(self.model_search)
+        layout.add_widget(self.model_search)
         
-        layout.add_widget(search_box)
-        
-        # Список моделей
-        models_scroll = ScrollView(size_hint=(1, 0.38))
+        # Models list
+        scroll = ScrollView(size_hint=(1, 0.4))
         self.models_grid = GridLayout(cols=1, spacing=dp(5), size_hint_y=None, padding=dp(5))
         self.models_grid.bind(minimum_height=self.models_grid.setter('height'))
+        self.refresh_models()
+        scroll.add_widget(self.models_grid)
+        layout.add_widget(scroll)
         
-        self.refresh_models_list()
-        
-        models_scroll.add_widget(self.models_grid)
-        layout.add_widget(models_scroll)
-        
-        # Выбранная модель
-        self.selected_label = Label(
-            text=f'Selected: {GROQ_MODELS[0]["name"]}',
-            font_size=sp(14),
-            size_hint=(1, 0.05),
-            color=(0.5, 1, 0.5, 1)
-        )
+        # Selected model
+        self.selected_label = Label(text=f'Selected: {GROQ_MODELS[0]["name"]}',
+                                    font_size=sp(13), size_hint=(1, 0.04), color=(0.5, 1, 0.5, 1))
         layout.add_widget(self.selected_label)
         
         self.add_widget(layout)
     
-    def refresh_models_list(self):
+    def refresh_models(self, filter_text=''):
         self.models_grid.clear_widgets()
         
-        # Сначала рекомендованные
-        for model in self.filtered_models:
-            if model['recommended']:
-                self.add_model_button(model, True)
-        
-        # Затем остальные
-        for model in self.filtered_models:
-            if not model['recommended']:
-                self.add_model_button(model, False)
-    
-    def add_model_button(self, model, is_recommended):
-        is_selected = model['id'] == self.selected_model
-        
-        if is_recommended:
-            bg_color = (0.25, 0.35, 0.25, 1) if is_selected else (0.2, 0.3, 0.2, 1)
-            prefix = "★ "
-        else:
-            bg_color = (0.25, 0.25, 0.35, 1) if is_selected else (0.15, 0.15, 0.2, 1)
-            prefix = "  "
-        
-        btn = Button(
-            text=f"{prefix}{model['name']}\n   {model['speed']} | {model['quality']}",
-            font_size=sp(12),
-            size_hint_y=None,
-            height=dp(55),
-            background_color=bg_color,
-            background_normal='',
-            halign='left'
-        )
-        btn.bind(on_release=lambda x, m=model: self.select_model(m))
-        self.models_grid.add_widget(btn)
+        for model in GROQ_MODELS:
+            if filter_text and filter_text.lower() not in model['name'].lower():
+                continue
+            
+            is_selected = model['id'] == self.selected_model
+            is_rec = model['recommended']
+            
+            if is_rec:
+                bg = (0.25, 0.35, 0.25, 1) if is_selected else (0.2, 0.28, 0.2, 1)
+                prefix = "* "
+            else:
+                bg = (0.25, 0.25, 0.35, 1) if is_selected else (0.15, 0.15, 0.2, 1)
+                prefix = "  "
+            
+            btn = Button(
+                text=f"{prefix}{model['name']}\n   {model['speed']} | {model['quality']}",
+                font_size=sp(11),
+                size_hint_y=None,
+                height=dp(50),
+                background_color=bg,
+                background_normal='',
+                halign='left'
+            )
+            btn.bind(on_release=lambda x, m=model: self.select_model(m))
+            self.models_grid.add_widget(btn)
     
     def filter_models(self, instance, text):
-        text = text.lower()
-        if text:
-            self.filtered_models = [m for m in GROQ_MODELS if text in m['name'].lower() or text in m['id'].lower()]
-        else:
-            self.filtered_models = GROQ_MODELS.copy()
-        self.refresh_models_list()
+        self.refresh_models(text)
     
     def select_model(self, model):
         self.selected_model = model['id']
         self.selected_label.text = f"Selected: {model['name']}"
         self.app.groq_client.set_model(model['id'])
         self.app.save_selected_model(model['id'])
-        self.refresh_models_list()
+        self.refresh_models(self.model_search.text)
     
     def toggle_password(self):
         self.api_key_input.password = not self.api_key_input.password
@@ -1086,193 +997,140 @@ class SettingsScreen(BaseScreen):
         key = self.api_key_input.text.strip()
         self.app.save_api_key(key)
         self.app.groq_client.set_api_key(key)
-        self.status_indicator.text = 'Saved!'
-        self.status_indicator.color = (0.5, 1, 0.5, 1)
+        self.status_label.text = 'Key saved!'
+        self.status_label.color = (0.5, 1, 0.5, 1)
     
     def test_connection(self):
         key = self.api_key_input.text.strip()
         if not key:
-            self.status_indicator.text = 'Enter API key first'
-            self.status_indicator.color = (1, 0.5, 0.5, 1)
+            self.status_label.text = 'Enter API key first'
+            self.status_label.color = (1, 0.5, 0.5, 1)
             return
         
         self.app.groq_client.set_api_key(key)
-        self.status_indicator.text = 'Testing...'
-        self.status_indicator.color = (1, 1, 0.5, 1)
+        self.status_label.text = 'Testing...'
+        self.status_label.color = (1, 1, 0.5, 1)
         
-        self.app.groq_client.test_connection(self.on_test_result)
+        # Используем Clock для выполнения запроса
+        Clock.schedule_once(lambda dt: self._do_test(), 0.1)
     
-    def on_test_result(self, success, message):
-        if success:
-            self.status_indicator.text = 'Connected!'
-            self.status_indicator.color = (0.5, 1, 0.5, 1)
-        else:
-            self.status_indicator.text = message[:20]
-            self.status_indicator.color = (1, 0.5, 0.5, 1)
+    def _do_test(self):
+        success, message = self.app.groq_client.test_connection_sync()
+        self.status_label.text = message
+        self.status_label.color = (0.5, 1, 0.5, 1) if success else (1, 0.5, 0.5, 1)
     
     def go_back(self):
         self.manager.transition = SlideTransition(direction='right')
         self.manager.current = 'home'
 
 
-# ==================== ГЛАВНЫЙ ЭКРАН ====================
-
 class HomeScreen(BaseScreen):
     def __init__(self, app, **kwargs):
         super().__init__(**kwargs)
         self.app = app
         
-        layout = BoxLayout(orientation='vertical', padding=dp(20), spacing=dp(10))
+        layout = BoxLayout(orientation='vertical', padding=dp(20), spacing=dp(8))
         
-        # Заголовок
-        layout.add_widget(Label(
-            text='AI GAME',
-            font_size=sp(42),
-            size_hint=(1, 0.1),
-            bold=True,
-            color=(0.5, 0.8, 1, 1)
-        ))
+        # Title
+        layout.add_widget(Label(text='AI GAME', font_size=sp(40), size_hint=(1, 0.1),
+                                bold=True, color=(0.5, 0.8, 1, 1)))
+        layout.add_widget(Label(text='GENERATOR', font_size=sp(32), size_hint=(1, 0.08),
+                                bold=True, color=(1, 0.5, 0.8, 1)))
+        layout.add_widget(Label(text='Powered by Groq AI', font_size=sp(11),
+                                size_hint=(1, 0.03), color=(0.5, 0.5, 0.6, 1)))
         
-        layout.add_widget(Label(
-            text='GENERATOR',
-            font_size=sp(36),
-            size_hint=(1, 0.08),
-            bold=True,
-            color=(1, 0.5, 0.8, 1)
-        ))
-        
-        layout.add_widget(Label(
-            text='Powered by Groq AI',
-            font_size=sp(12),
-            size_hint=(1, 0.03),
-            color=(0.5, 0.5, 0.6, 1)
-        ))
-        
-        # Статус API
-        self.api_status = Label(
-            text='API: Not configured',
-            font_size=sp(12),
-            size_hint=(1, 0.04),
-            color=(1, 0.5, 0.5, 1)
-        )
+        # API Status
+        self.api_status = Label(text='API: Not configured', font_size=sp(11),
+                                size_hint=(1, 0.04), color=(1, 0.5, 0.5, 1))
         layout.add_widget(self.api_status)
         
-        # Поле ввода
-        layout.add_widget(Label(
-            text='Describe your dream game:',
-            font_size=sp(14),
-            size_hint=(1, 0.04),
-            halign='left',
-            color=(0.8, 0.8, 0.9, 1)
-        ))
+        # Prompt input
+        layout.add_widget(Label(text='Describe your game:', font_size=sp(13),
+                                size_hint=(1, 0.04), color=(0.7, 0.7, 0.8, 1)))
         
         self.prompt_input = TextInput(
-            hint_text='Example: A space shooter where I pilot a neon ship and fight alien robots',
+            hint_text='Example: Space shooter with neon effects and alien enemies',
             multiline=True,
-            font_size=sp(14),
-            size_hint=(1, 0.18),
+            font_size=sp(13),
+            size_hint=(1, 0.16),
             background_color=(0.1, 0.1, 0.15, 1),
             foreground_color=(1, 1, 1, 1),
-            cursor_color=(0.5, 0.8, 1, 1),
-            hint_text_color=(0.4, 0.4, 0.5, 1)
+            cursor_color=(0.5, 0.8, 1, 1)
         )
         layout.add_widget(self.prompt_input)
         
-        # Примеры
-        layout.add_widget(Label(
-            text='Quick ideas:',
-            font_size=sp(12),
-            size_hint=(1, 0.03),
-            color=(0.6, 0.6, 0.7, 1)
-        ))
+        # Quick examples
+        examples = GridLayout(cols=2, size_hint=(1, 0.1), spacing=dp(5))
+        for name, prompt in [('Space', 'space shooter aliens'), ('Fantasy', 'magic dragon quest'),
+                             ('Ocean', 'underwater fish adventure'), ('Cyber', 'neon robot battle')]:
+            btn = Button(text=name, font_size=sp(11), background_color=(0.2, 0.2, 0.3, 1), background_normal='')
+            btn.bind(on_release=lambda x, p=prompt: setattr(self.prompt_input, 'text', p))
+            examples.add_widget(btn)
+        layout.add_widget(examples)
         
-        examples_grid = GridLayout(cols=2, size_hint=(1, 0.1), spacing=dp(5))
-        examples = [
-            ('Космический шутер', 'Space shooter with neon effects and alien enemies'),
-            ('Зомби выживание', 'Zombie survival game in a dark apocalyptic world'),
-            ('Сладкий мир', 'Cute candy collector in a magical sweet kingdom'),
-            ('Киберпанк', 'Cyberpunk robot battle with hacking mechanics'),
-        ]
+        # Generate button
+        self.gen_btn = Button(text='GENERATE GAME', font_size=sp(18), size_hint=(1, 0.1),
+                              background_color=(0.3, 0.6, 0.3, 1), background_normal='', bold=True)
+        self.gen_btn.bind(on_release=lambda x: self.generate())
+        layout.add_widget(self.gen_btn)
         
-        for name, prompt in examples:
-            btn = Button(
-                text=name,
-                font_size=sp(11),
-                background_color=(0.2, 0.2, 0.3, 1),
-                background_normal=''
-            )
-            btn.bind(on_release=lambda x, p=prompt: self.set_prompt(p))
-            examples_grid.add_widget(btn)
+        # Local generate button
+        self.local_btn = Button(text='Quick Generate (Offline)', font_size=sp(13), size_hint=(1, 0.06),
+                                background_color=(0.4, 0.3, 0.5, 1), background_normal='')
+        self.local_btn.bind(on_release=lambda x: self.generate_local())
+        layout.add_widget(self.local_btn)
         
-        layout.add_widget(examples_grid)
+        # Bottom buttons
+        bottom = BoxLayout(size_hint=(1, 0.07), spacing=dp(10))
         
-        # Кнопка генерации
-        self.generate_btn = Button(
-            text='GENERATE WITH AI',
-            font_size=sp(20),
-            size_hint=(1, 0.1),
-            background_color=(0.3, 0.6, 0.3, 1),
-            background_normal='',
-            bold=True
-        )
-        self.generate_btn.bind(on_release=lambda x: self.generate())
-        layout.add_widget(self.generate_btn)
-        
-        # Нижние кнопки
-        bottom_buttons = BoxLayout(size_hint=(1, 0.07), spacing=dp(10))
-        
-        settings_btn = Button(
-            text='API Settings',
-            font_size=sp(14),
-            background_color=(0.4, 0.3, 0.5, 1),
-            background_normal=''
-        )
+        settings_btn = Button(text='API Settings', font_size=sp(13),
+                              background_color=(0.35, 0.3, 0.45, 1), background_normal='')
         settings_btn.bind(on_release=lambda x: self.go_settings())
-        bottom_buttons.add_widget(settings_btn)
+        bottom.add_widget(settings_btn)
         
-        history_btn = Button(
-            text='My Games',
-            font_size=sp(14),
-            background_color=(0.25, 0.25, 0.35, 1),
-            background_normal=''
-        )
+        history_btn = Button(text='My Games', font_size=sp(13),
+                             background_color=(0.25, 0.25, 0.35, 1), background_normal='')
         history_btn.bind(on_release=lambda x: self.go_history())
-        bottom_buttons.add_widget(history_btn)
+        bottom.add_widget(history_btn)
         
-        layout.add_widget(bottom_buttons)
-        
+        layout.add_widget(bottom)
         self.add_widget(layout)
     
     def on_pre_enter(self):
-        self.update_api_status()
+        self.update_status()
     
-    def update_api_status(self):
+    def update_status(self):
         key = self.app.load_api_key()
-        if key:
-            self.api_status.text = f'API: Connected | Model: {self.app.groq_client.model}'
+        if key and HAS_REQUESTS:
+            self.api_status.text = f'API: Ready | Model: {self.app.groq_client.model}'
             self.api_status.color = (0.5, 1, 0.5, 1)
-            self.generate_btn.background_color = (0.3, 0.6, 0.3, 1)
+            self.gen_btn.background_color = (0.3, 0.6, 0.3, 1)
+        elif not HAS_REQUESTS:
+            self.api_status.text = 'API: Offline mode only'
+            self.api_status.color = (1, 0.7, 0.3, 1)
+            self.gen_btn.background_color = (0.4, 0.4, 0.4, 1)
         else:
             self.api_status.text = 'API: Not configured - Go to Settings'
             self.api_status.color = (1, 0.5, 0.5, 1)
-            self.generate_btn.background_color = (0.4, 0.4, 0.4, 1)
-    
-    def set_prompt(self, prompt):
-        self.prompt_input.text = prompt
+            self.gen_btn.background_color = (0.4, 0.4, 0.4, 1)
     
     def generate(self):
         key = self.app.load_api_key()
-        if not key:
-            self.api_status.text = 'Please configure API key first!'
-            self.api_status.color = (1, 0.5, 0.5, 1)
+        if not key or not HAS_REQUESTS:
+            self.api_status.text = 'No API key! Using offline mode...'
+            self.api_status.color = (1, 0.7, 0.3, 1)
+            Clock.schedule_once(lambda dt: self.generate_local(), 0.5)
             return
         
-        prompt = self.prompt_input.text.strip()
-        if not prompt:
-            prompt = "A fun arcade game with colorful graphics"
-        
+        prompt = self.prompt_input.text.strip() or "fun arcade game"
         self.app.current_prompt = prompt
         self.manager.current = 'loading'
+    
+    def generate_local(self):
+        prompt = self.prompt_input.text.strip() or "space shooter game"
+        self.app.current_game = generate_local_game(prompt)
+        self.app.save_game_to_history(self.app.current_game)
+        self.manager.current = 'game'
     
     def go_settings(self):
         self.manager.transition = SlideTransition(direction='left')
@@ -1283,184 +1141,145 @@ class HomeScreen(BaseScreen):
         self.manager.current = 'history'
 
 
-# ==================== ЭКРАН ЗАГРУЗКИ ====================
-
 class LoadingScreen(BaseScreen):
     def __init__(self, app, **kwargs):
         super().__init__(**kwargs)
         self.app = app
         self.progress = 0
-        self.current_message = 0
-        self.fact_index = 0
-        self.dots_anim = 0
-        self.generation_complete = False
-        self.generation_error = None
+        self.dots = 0
+        self.api_done = False
+        self.api_result = None
+        self.api_error = None
         
-        self.layout = FloatLayout()
+        layout = FloatLayout()
         
-        # AI иконка
-        self.ai_label = Label(
-            text='AI',
-            font_size=sp(48),
-            pos_hint={'center_x': 0.5, 'center_y': 0.78},
-            color=(0.5, 0.8, 1, 1),
-            bold=True
-        )
-        self.layout.add_widget(self.ai_label)
+        self.title_label = Label(text='AI', font_size=sp(48), bold=True,
+                                 pos_hint={'center_x': 0.5, 'center_y': 0.75},
+                                 color=(0.5, 0.8, 1, 1))
+        layout.add_widget(self.title_label)
         
-        # Модель
-        self.model_label = Label(
-            text='',
-            font_size=sp(12),
-            pos_hint={'center_x': 0.5, 'center_y': 0.72},
-            color=(0.5, 0.5, 0.6, 1)
-        )
-        self.layout.add_widget(self.model_label)
+        self.model_label = Label(text='', font_size=sp(11),
+                                 pos_hint={'center_x': 0.5, 'center_y': 0.68},
+                                 color=(0.5, 0.5, 0.6, 1))
+        layout.add_widget(self.model_label)
         
-        # Прогресс бар
-        self.progress_bar = ProgressBar(
-            max=100,
-            value=0,
-            size_hint=(0.8, 0.03),
-            pos_hint={'center_x': 0.5, 'center_y': 0.55}
-        )
-        self.layout.add_widget(self.progress_bar)
+        self.progress_bar = ProgressBar(max=100, value=0, size_hint=(0.8, 0.03),
+                                        pos_hint={'center_x': 0.5, 'center_y': 0.55})
+        layout.add_widget(self.progress_bar)
         
-        # Процент
-        self.percent_label = Label(
-            text='0%',
-            font_size=sp(18),
-            pos_hint={'center_x': 0.5, 'center_y': 0.5},
-            color=(0.5, 0.8, 1, 1)
-        )
-        self.layout.add_widget(self.percent_label)
+        self.percent_label = Label(text='0%', font_size=sp(16),
+                                   pos_hint={'center_x': 0.5, 'center_y': 0.5},
+                                   color=(0.5, 0.8, 1, 1))
+        layout.add_widget(self.percent_label)
         
-        # Статус
-        self.status_label = Label(
-            text='Initializing...',
-            font_size=sp(14),
-            pos_hint={'center_x': 0.5, 'center_y': 0.43},
-            color=(0.6, 0.6, 0.7, 1)
-        )
-        self.layout.add_widget(self.status_label)
+        self.status_label = Label(text='Initializing...', font_size=sp(13),
+                                  pos_hint={'center_x': 0.5, 'center_y': 0.43},
+                                  color=(0.6, 0.6, 0.7, 1))
+        layout.add_widget(self.status_label)
         
-        # Факт
-        self.fact_label = Label(
-            text='',
-            font_size=sp(13),
-            pos_hint={'center_x': 0.5, 'center_y': 0.25},
-            color=(0.7, 0.7, 0.5, 1),
-            halign='center',
-            size_hint=(0.9, 0.15)
-        )
-        self.fact_label.bind(size=lambda *x: setattr(self.fact_label, 'text_size', (self.fact_label.width, None)))
-        self.layout.add_widget(self.fact_label)
+        self.fact_label = Label(text='', font_size=sp(12),
+                                pos_hint={'center_x': 0.5, 'center_y': 0.25},
+                                color=(0.6, 0.6, 0.5, 1), halign='center',
+                                size_hint=(0.9, 0.15))
+        self.fact_label.bind(size=lambda *x: setattr(self.fact_label, 'text_size', 
+                                                      (self.fact_label.width, None)))
+        layout.add_widget(self.fact_label)
         
-        # Ошибка
-        self.error_label = Label(
-            text='',
-            font_size=sp(12),
-            pos_hint={'center_x': 0.5, 'center_y': 0.15},
-            color=(1, 0.5, 0.5, 1),
-            halign='center',
-            size_hint=(0.9, 0.1)
-        )
-        self.error_label.bind(size=lambda *x: setattr(self.error_label, 'text_size', (self.error_label.width, None)))
-        self.layout.add_widget(self.error_label)
+        self.error_label = Label(text='', font_size=sp(11),
+                                 pos_hint={'center_x': 0.5, 'center_y': 0.15},
+                                 color=(1, 0.5, 0.5, 1), halign='center',
+                                 size_hint=(0.9, 0.1))
+        layout.add_widget(self.error_label)
         
-        self.add_widget(self.layout)
+        self.add_widget(layout)
     
     def on_pre_enter(self):
         self.progress = 0
-        self.generation_complete = False
-        self.generation_error = None
+        self.api_done = False
+        self.api_result = None
+        self.api_error = None
         self.error_label.text = ''
         self.model_label.text = f'Using: {self.app.groq_client.model}'
-        self.start_generation()
-    
-    def start_generation(self):
-        # Запускаем анимацию
-        Clock.schedule_interval(self.update_loading, 0.05)
+        self.fact_label.text = random.choice(FUN_FACTS)
         
-        # Запускаем генерацию через API
-        self.app.groq_client.generate_game(
-            self.app.current_prompt,
-            self.on_generation_result
-        )
+        Clock.schedule_interval(self.update_progress, 0.05)
+        Clock.schedule_once(self.start_api_call, 0.2)
     
-    def on_generation_result(self, success, result):
+    def start_api_call(self, dt):
+        # Делаем API запрос
+        Clock.schedule_once(self._do_api_call, 0.1)
+    
+    def _do_api_call(self, dt):
+        success, result = self.app.groq_client.generate_game_sync(self.app.current_prompt)
         if success:
-            self.generation_complete = True
-            self.app.ai_generated_config = result
+            self.api_result = result
         else:
-            self.generation_error = result
+            self.api_error = result
+        self.api_done = True
     
-    def update_loading(self, dt):
-        self.dots_anim += dt
+    def update_progress(self, dt):
+        self.dots += dt
         
         # Проверяем ошибку
-        if self.generation_error:
-            Clock.unschedule(self.update_loading)
-            self.error_label.text = f"Error: {self.generation_error}"
-            self.status_label.text = "Generation failed"
-            self.percent_label.text = "!"
-            
-            # Возврат через 3 секунды
-            Clock.schedule_once(lambda dt: self.go_back(), 3)
+        if self.api_error:
+            Clock.unschedule(self.update_progress)
+            self.error_label.text = f"Error: {self.api_error}\nUsing offline mode..."
+            self.status_label.text = "Switching to local generation..."
+            Clock.schedule_once(self.use_local_fallback, 2)
             return False
         
-        # Проверяем завершение
-        if self.generation_complete:
+        # Проверяем успех
+        if self.api_done and self.api_result:
             self.progress = 100
             self.progress_bar.value = 100
             self.percent_label.text = "100%"
             self.status_label.text = "Game Ready!"
-            
-            Clock.unschedule(self.update_loading)
-            Clock.schedule_once(lambda dt: self.go_to_game(), 0.5)
+            Clock.unschedule(self.update_progress)
+            Clock.schedule_once(self.finish, 0.5)
             return False
         
         # Анимация прогресса (до 90%)
         if self.progress < 90:
-            self.progress += random.uniform(0.3, 1.5)
+            self.progress += random.uniform(0.5, 1.5)
         
         self.progress_bar.value = self.progress
         self.percent_label.text = f"{int(self.progress)}%"
         
-        # Статус
-        msg_index = min(int(self.progress / 10), len(LOADING_MESSAGES) - 1)
-        dots = '.' * (int(self.dots_anim * 2) % 4)
-        self.status_label.text = LOADING_MESSAGES[msg_index] + dots
+        dots = '.' * (int(self.dots * 2) % 4)
+        statuses = ['Connecting', 'Analyzing', 'Creating', 'Designing', 'Building']
+        idx = min(int(self.progress / 20), len(statuses) - 1)
+        self.status_label.text = statuses[idx] + dots
         
-        # AI анимация
-        pulse = 1 + 0.1 * math.sin(self.dots_anim * 5)
-        self.ai_label.font_size = sp(48 * pulse)
+        # AI pulse
+        pulse = 1 + 0.1 * math.sin(self.dots * 5)
+        self.title_label.font_size = sp(48 * pulse)
         
-        # Факт
-        if int(self.dots_anim) % 4 == 0 and int(self.dots_anim) != self.fact_index:
-            self.fact_index = int(self.dots_anim)
-            self.fact_label.text = f"Did you know?\n{random.choice(FUN_FACTS)}"
+        # Update fact
+        if int(self.dots) % 4 == 0:
+            self.fact_label.text = random.choice(FUN_FACTS)
         
         return True
     
-    def go_to_game(self):
-        # Создаём конфиг игры из ответа AI
-        self.app.current_game = self.app.build_game_config(self.app.ai_generated_config)
+    def use_local_fallback(self, dt):
+        self.app.current_game = generate_local_game(self.app.current_prompt)
         self.app.save_game_to_history(self.app.current_game)
         self.manager.current = 'game'
     
-    def go_back(self):
-        self.manager.current = 'home'
+    def finish(self, dt):
+        self.app.current_game = self.app.build_game_config(self.api_result)
+        self.app.save_game_to_history(self.app.current_game)
+        self.manager.current = 'game'
+    
+    def on_leave(self):
+        Clock.unschedule(self.update_progress)
 
-
-# ==================== ИГРОВОЙ ЭКРАН ====================
 
 class GameScreen(BaseScreen):
     def __init__(self, app, **kwargs):
         super().__init__(**kwargs)
         self.app = app
         self.engine = None
-        
+        self.update_event = None
         self.layout = FloatLayout()
         self.add_widget(self.layout)
     
@@ -1473,130 +1292,71 @@ class GameScreen(BaseScreen):
         if not self.app.current_game:
             return
         
-        # Движок
+        # Engine
         self.engine = GameEngine(self.app.current_game, size_hint=(1, 0.85))
         self.layout.add_widget(self.engine)
         
-        # Верхняя панель
-        top_panel = BoxLayout(
-            size_hint=(1, 0.08),
-            pos_hint={'top': 1},
-            padding=dp(5),
-            spacing=dp(5)
-        )
-        
-        with top_panel.canvas.before:
+        # Top panel
+        top = BoxLayout(size_hint=(1, 0.08), pos_hint={'top': 1}, padding=dp(5), spacing=dp(5))
+        with top.canvas.before:
             Color(0, 0, 0, 0.5)
-            self.top_bg = Rectangle(pos=top_panel.pos, size=top_panel.size)
-        top_panel.bind(pos=lambda *x: setattr(self.top_bg, 'pos', top_panel.pos),
-                      size=lambda *x: setattr(self.top_bg, 'size', top_panel.size))
+            self.top_bg = Rectangle(pos=top.pos, size=top.size)
+        top.bind(pos=lambda *x: setattr(self.top_bg, 'pos', top.pos),
+                size=lambda *x: setattr(self.top_bg, 'size', top.size))
         
-        self.game_name_label = Label(
-            text=self.app.current_game.get('name', 'Game'),
-            font_size=sp(13),
-            size_hint=(0.4, 1),
-            halign='left',
-            color=(0.8, 0.8, 1, 1)
-        )
-        top_panel.add_widget(self.game_name_label)
+        self.name_lbl = Label(text=self.app.current_game.get('name', 'Game')[:20],
+                              font_size=sp(12), size_hint=(0.4, 1), color=(0.8, 0.8, 1, 1))
+        top.add_widget(self.name_lbl)
         
-        self.score_label = Label(
-            text='Score: 0',
-            font_size=sp(16),
-            size_hint=(0.35, 1),
-            color=(1, 1, 0.3, 1)
-        )
-        top_panel.add_widget(self.score_label)
+        self.score_lbl = Label(text='Score: 0', font_size=sp(14), 
+                               size_hint=(0.35, 1), color=(1, 1, 0.3, 1))
+        top.add_widget(self.score_lbl)
         
-        self.level_label = Label(
-            text='Lv.1',
-            font_size=sp(14),
-            size_hint=(0.25, 1),
-            color=(0.5, 1, 0.5, 1)
-        )
-        top_panel.add_widget(self.level_label)
+        self.level_lbl = Label(text='Lv.1', font_size=sp(12),
+                               size_hint=(0.25, 1), color=(0.5, 1, 0.5, 1))
+        top.add_widget(self.level_lbl)
         
-        self.layout.add_widget(top_panel)
+        self.layout.add_widget(top)
         
-        # Здоровье
-        health_panel = BoxLayout(
-            size_hint=(1, 0.04),
-            pos_hint={'top': 0.92},
-            padding=(dp(10), 0)
-        )
+        # Health bar
+        health_panel = BoxLayout(size_hint=(1, 0.04), pos_hint={'top': 0.92}, padding=(dp(10), 0))
+        self.health_lbl = Label(text='HP:', font_size=sp(11), size_hint=(0.12, 1), color=(1, 0.5, 0.5, 1))
+        health_panel.add_widget(self.health_lbl)
         
-        self.health_label = Label(
-            text='HP:',
-            font_size=sp(12),
-            size_hint=(0.15, 1),
-            color=(1, 0.5, 0.5, 1)
-        )
-        health_panel.add_widget(self.health_label)
-        
-        player_health = self.app.current_game.get('player', {}).get('health', 3)
-        self.health_bar = ProgressBar(
-            max=player_health,
-            value=player_health,
-            size_hint=(0.85, 0.6)
-        )
+        hp = self.app.current_game.get('player', {}).get('health', 3)
+        self.health_bar = ProgressBar(max=hp, value=hp, size_hint=(0.88, 0.6))
         health_panel.add_widget(self.health_bar)
-        
         self.layout.add_widget(health_panel)
         
-        # Нижняя панель
-        bottom_panel = BoxLayout(
-            size_hint=(1, 0.07),
-            pos_hint={'y': 0},
-            spacing=dp(5),
-            padding=dp(5)
-        )
-        
-        with bottom_panel.canvas.before:
+        # Bottom panel
+        bottom = BoxLayout(size_hint=(1, 0.07), pos_hint={'y': 0}, spacing=dp(5), padding=dp(5))
+        with bottom.canvas.before:
             Color(0, 0, 0, 0.5)
-            self.bottom_bg = Rectangle(pos=bottom_panel.pos, size=bottom_panel.size)
-        bottom_panel.bind(pos=lambda *x: setattr(self.bottom_bg, 'pos', bottom_panel.pos),
-                         size=lambda *x: setattr(self.bottom_bg, 'size', bottom_panel.size))
+            self.bot_bg = Rectangle(pos=bottom.pos, size=bottom.size)
+        bottom.bind(pos=lambda *x: setattr(self.bot_bg, 'pos', bottom.pos),
+                   size=lambda *x: setattr(self.bot_bg, 'size', bottom.size))
         
-        pause_btn = Button(
-            text='||',
-            font_size=sp(18),
-            size_hint=(0.15, 1),
-            background_color=(0.4, 0.4, 0.5, 1),
-            background_normal=''
-        )
+        pause_btn = Button(text='||', font_size=sp(16), size_hint=(0.15, 1),
+                          background_color=(0.4, 0.4, 0.5, 1), background_normal='')
         pause_btn.bind(on_release=lambda x: self.toggle_pause())
-        bottom_panel.add_widget(pause_btn)
+        bottom.add_widget(pause_btn)
         
-        self.combo_label = Label(
-            text='',
-            font_size=sp(14),
-            size_hint=(0.4, 1),
-            color=(1, 0.8, 0.2, 1)
-        )
-        bottom_panel.add_widget(self.combo_label)
+        self.combo_lbl = Label(text='', font_size=sp(13), size_hint=(0.4, 1), color=(1, 0.8, 0.2, 1))
+        bottom.add_widget(self.combo_lbl)
         
-        self.time_label = Label(
-            text='0:00',
-            font_size=sp(14),
-            size_hint=(0.25, 1),
-            color=(0.7, 0.7, 0.8, 1)
-        )
-        bottom_panel.add_widget(self.time_label)
+        self.time_lbl = Label(text='0:00', font_size=sp(13), size_hint=(0.25, 1), color=(0.7, 0.7, 0.8, 1))
+        bottom.add_widget(self.time_lbl)
         
-        exit_btn = Button(
-            text='X',
-            font_size=sp(16),
-            size_hint=(0.15, 1),
-            background_color=(0.5, 0.3, 0.3, 1),
-            background_normal=''
-        )
-        exit_btn.bind(on_release=lambda x: self.confirm_exit())
-        bottom_panel.add_widget(exit_btn)
+        exit_btn = Button(text='X', font_size=sp(14), size_hint=(0.15, 1),
+                         background_color=(0.5, 0.3, 0.3, 1), background_normal='')
+        exit_btn.bind(on_release=lambda x: self.exit_game())
+        bottom.add_widget(exit_btn)
         
-        self.layout.add_widget(bottom_panel)
+        self.layout.add_widget(bottom)
         
+        # Start
         self.engine.start_game()
-        Clock.schedule_interval(self.update, 1/60)
+        self.update_event = Clock.schedule_interval(self.update, 1/60)
     
     def update(self, dt):
         if not self.engine:
@@ -1604,33 +1364,30 @@ class GameScreen(BaseScreen):
         
         self.engine.update(dt)
         
-        self.score_label.text = f"Score: {self.engine.score}"
-        self.level_label.text = f"Lv.{self.engine.level}"
+        self.score_lbl.text = f"Score: {self.engine.score}"
+        self.level_lbl.text = f"Lv.{self.engine.level}"
         
         if self.engine.player:
             self.health_bar.value = self.engine.player.health
-            
-            if self.engine.combo > 1:
-                self.combo_label.text = f"Combo x{self.engine.combo}!"
-            else:
-                self.combo_label.text = ""
+            self.combo_lbl.text = f"x{self.engine.combo}" if self.engine.combo > 1 else ""
         
-        mins = int(self.engine.game_time) // 60
-        secs = int(self.engine.game_time) % 60
-        self.time_label.text = f"{mins}:{secs:02d}"
+        m, s = divmod(int(self.engine.game_time), 60)
+        self.time_lbl.text = f"{m}:{s:02d}"
         
         if self.engine.game_over:
-            Clock.unschedule(self.update)
-            self.app.last_game_stats = {
+            if self.update_event:
+                self.update_event.cancel()
+            self.app.last_stats = {
                 'score': self.engine.score,
                 'level': self.engine.level,
                 'time': self.engine.game_time,
-                'enemies_killed': self.engine.enemies_killed,
-                'items_collected': self.engine.items_collected,
-                'max_combo': self.engine.max_combo,
-                'game_name': self.app.current_game.get('name', 'Game')
+                'enemies': self.engine.enemies_killed,
+                'items': self.engine.items_collected,
+                'combo': self.engine.max_combo,
+                'name': self.app.current_game.get('name', 'Game')
             }
-            Clock.schedule_once(lambda dt: self.go_to_results(), 1)
+            Clock.schedule_once(lambda dt: setattr(self.manager, 'current', 'results'), 1)
+            return False
         
         return True
     
@@ -1638,179 +1395,120 @@ class GameScreen(BaseScreen):
         if self.engine:
             self.engine.paused = not self.engine.paused
     
-    def confirm_exit(self):
-        Clock.unschedule(self.update)
+    def exit_game(self):
+        if self.update_event:
+            self.update_event.cancel()
         self.manager.current = 'home'
     
-    def go_to_results(self):
-        self.manager.current = 'results'
-    
     def on_leave(self):
-        Clock.unschedule(self.update)
+        if self.update_event:
+            self.update_event.cancel()
 
-
-# ==================== РЕЗУЛЬТАТЫ ====================
 
 class ResultsScreen(BaseScreen):
     def __init__(self, app, **kwargs):
         super().__init__(**kwargs)
         self.app = app
-        
         self.layout = BoxLayout(orientation='vertical', padding=dp(20), spacing=dp(10))
         self.add_widget(self.layout)
     
     def on_pre_enter(self):
         self.layout.clear_widgets()
-        stats = self.app.last_game_stats or {}
+        stats = self.app.last_stats or {}
         
-        self.layout.add_widget(Label(
-            text='GAME OVER',
-            font_size=sp(32),
-            size_hint=(1, 0.1),
-            color=(1, 0.5, 0.5, 1),
-            bold=True
-        ))
+        self.layout.add_widget(Label(text='GAME OVER', font_size=sp(30), size_hint=(1, 0.1),
+                                     color=(1, 0.5, 0.5, 1), bold=True))
         
-        self.layout.add_widget(Label(
-            text=stats.get('game_name', 'Unknown'),
-            font_size=sp(16),
-            size_hint=(1, 0.06),
-            color=(0.7, 0.7, 0.9, 1)
-        ))
+        self.layout.add_widget(Label(text=stats.get('name', '')[:25], font_size=sp(14),
+                                     size_hint=(1, 0.05), color=(0.7, 0.7, 0.9, 1)))
         
-        self.layout.add_widget(Label(
-            text=f"SCORE: {stats.get('score', 0)}",
-            font_size=sp(36),
-            size_hint=(1, 0.12),
-            color=(1, 1, 0.3, 1),
-            bold=True
-        ))
+        self.layout.add_widget(Label(text=f"SCORE: {stats.get('score', 0)}", font_size=sp(32),
+                                     size_hint=(1, 0.12), color=(1, 1, 0.3, 1), bold=True))
         
-        stats_box = GridLayout(cols=2, size_hint=(1, 0.3), spacing=dp(10), padding=dp(10))
+        # Stats grid
+        grid = GridLayout(cols=2, size_hint=(1, 0.3), spacing=dp(8), padding=dp(10))
+        for name, key in [('Level', 'level'), ('Time', 'time'), ('Enemies', 'enemies'), 
+                          ('Items', 'items'), ('Max Combo', 'combo')]:
+            val = stats.get(key, 0)
+            if key == 'time':
+                val = f"{int(val)}s"
+            elif key == 'combo':
+                val = f"x{val}"
+            grid.add_widget(Label(text=name, font_size=sp(12), color=(0.6, 0.6, 0.7, 1)))
+            grid.add_widget(Label(text=str(val), font_size=sp(14), color=(0.9, 0.9, 1, 1), bold=True))
+        self.layout.add_widget(grid)
         
-        stat_items = [
-            ('Level', stats.get('level', 1)),
-            ('Time', f"{int(stats.get('time', 0))}s"),
-            ('Enemies', stats.get('enemies_killed', 0)),
-            ('Items', stats.get('items_collected', 0)),
-            ('Max Combo', f"x{stats.get('max_combo', 0)}"),
-        ]
+        # Buttons
+        btns = BoxLayout(size_hint=(1, 0.12), spacing=dp(10))
         
-        for name, value in stat_items:
-            stats_box.add_widget(Label(text=name, font_size=sp(13), color=(0.6, 0.6, 0.7, 1)))
-            stats_box.add_widget(Label(text=str(value), font_size=sp(15), color=(0.9, 0.9, 1, 1), bold=True))
+        retry = Button(text='RETRY', font_size=sp(15), background_color=(0.3, 0.5, 0.3, 1), background_normal='')
+        retry.bind(on_release=lambda x: setattr(self.manager, 'current', 'game'))
+        btns.add_widget(retry)
         
-        self.layout.add_widget(stats_box)
+        new_game = Button(text='NEW', font_size=sp(15), background_color=(0.3, 0.3, 0.5, 1), background_normal='')
+        new_game.bind(on_release=lambda x: setattr(self.manager, 'current', 'home'))
+        btns.add_widget(new_game)
         
-        buttons = BoxLayout(size_hint=(1, 0.15), spacing=dp(10))
+        self.layout.add_widget(btns)
         
-        retry_btn = Button(
-            text='PLAY AGAIN',
-            font_size=sp(16),
-            background_color=(0.3, 0.5, 0.3, 1),
-            background_normal=''
-        )
-        retry_btn.bind(on_release=lambda x: self.retry())
-        buttons.add_widget(retry_btn)
-        
-        new_btn = Button(
-            text='NEW GAME',
-            font_size=sp(16),
-            background_color=(0.3, 0.3, 0.5, 1),
-            background_normal=''
-        )
-        new_btn.bind(on_release=lambda x: self.new_game())
-        buttons.add_widget(new_btn)
-        
-        self.layout.add_widget(buttons)
-        
-        home_btn = Button(
-            text='HOME',
-            font_size=sp(14),
-            size_hint=(1, 0.08),
-            background_color=(0.3, 0.3, 0.35, 1),
-            background_normal=''
-        )
-        home_btn.bind(on_release=lambda x: self.go_home())
-        self.layout.add_widget(home_btn)
-    
-    def retry(self):
-        self.manager.current = 'game'
-    
-    def new_game(self):
-        self.manager.current = 'home'
-    
-    def go_home(self):
-        self.manager.current = 'home'
+        home = Button(text='HOME', font_size=sp(13), size_hint=(1, 0.08),
+                     background_color=(0.3, 0.3, 0.35, 1), background_normal='')
+        home.bind(on_release=lambda x: setattr(self.manager, 'current', 'home'))
+        self.layout.add_widget(home)
 
-
-# ==================== ИСТОРИЯ ====================
 
 class HistoryScreen(BaseScreen):
     def __init__(self, app, **kwargs):
         super().__init__(**kwargs)
         self.app = app
         
-        layout = BoxLayout(orientation='vertical', padding=dp(15), spacing=dp(10))
+        layout = BoxLayout(orientation='vertical', padding=dp(15), spacing=dp(8))
         
-        layout.add_widget(Label(
-            text='MY AI GAMES',
-            font_size=sp(24),
-            size_hint=(1, 0.08),
-            color=(0.5, 0.8, 1, 1),
-            bold=True
-        ))
+        layout.add_widget(Label(text='MY GAMES', font_size=sp(22), size_hint=(1, 0.08),
+                                color=(0.5, 0.8, 1, 1), bold=True))
         
-        self.scroll = ScrollView(size_hint=(1, 0.8))
-        self.grid = GridLayout(cols=1, spacing=dp(8), size_hint_y=None, padding=dp(5))
+        scroll = ScrollView(size_hint=(1, 0.82))
+        self.grid = GridLayout(cols=1, spacing=dp(6), size_hint_y=None, padding=dp(5))
         self.grid.bind(minimum_height=self.grid.setter('height'))
-        self.scroll.add_widget(self.grid)
-        layout.add_widget(self.scroll)
+        scroll.add_widget(self.grid)
+        layout.add_widget(scroll)
         
-        back_btn = Button(
-            text='< BACK',
-            font_size=sp(16),
-            size_hint=(1, 0.08),
-            background_color=(0.3, 0.3, 0.35, 1),
-            background_normal=''
-        )
-        back_btn.bind(on_release=lambda x: self.go_back())
-        layout.add_widget(back_btn)
+        back = Button(text='< BACK', font_size=sp(14), size_hint=(1, 0.07),
+                     background_color=(0.3, 0.3, 0.35, 1), background_normal='')
+        back.bind(on_release=lambda x: self.go_back())
+        layout.add_widget(back)
         
         self.add_widget(layout)
     
     def on_pre_enter(self):
-        self.refresh_list()
+        self.refresh()
     
-    def refresh_list(self):
+    def refresh(self):
         self.grid.clear_widgets()
         history = self.app.load_history()
         
         if not history:
-            self.grid.add_widget(Label(
-                text='No games yet!\nGenerate your first AI game.',
-                font_size=sp(16),
-                size_hint_y=None,
-                height=dp(80)
-            ))
+            self.grid.add_widget(Label(text='No games yet!\nGenerate your first game.',
+                                       font_size=sp(14), size_hint_y=None, height=dp(60)))
             return
         
-        for game in reversed(history[-20:]):
-            desc = game.get('description', '')[:50]
+        for game in reversed(history[-15:]):
+            ai_tag = "[AI]" if game.get('ai_generated', True) else "[Local]"
+            name = game.get('name', 'Unknown')[:20]
             
             btn = Button(
-                text=f"{game.get('name', 'Unknown')}\n{desc}...",
-                font_size=sp(12),
+                text=f"{ai_tag} {name}\n{game.get('description', '')[:40]}...",
+                font_size=sp(11),
                 size_hint_y=None,
-                height=dp(60),
-                background_color=(0.15, 0.2, 0.25, 1),
+                height=dp(55),
+                background_color=(0.15, 0.18, 0.22, 1),
                 background_normal='',
                 halign='left'
             )
-            btn.bind(on_release=lambda x, g=game: self.play_game(g))
+            btn.bind(on_release=lambda x, g=game: self.play(g))
             self.grid.add_widget(btn)
     
-    def play_game(self, game):
+    def play(self, game):
         self.app.current_game = game
         self.manager.current = 'game'
     
@@ -1827,21 +1525,20 @@ class GameGeneratorApp(App):
         self.groq_client = GroqClient()
         self.current_prompt = ""
         self.current_game = None
-        self.ai_generated_config = None
-        self.last_game_stats = None
+        self.last_stats = None
         self.data_path = get_data_path()
         
-        # Загружаем сохранённые настройки
-        saved_key = self.load_api_key()
-        if saved_key:
-            self.groq_client.set_api_key(saved_key)
+        # Load saved settings
+        key = self.load_api_key()
+        if key:
+            self.groq_client.set_api_key(key)
         
-        saved_model = self.load_selected_model()
-        if saved_model:
-            self.groq_client.set_model(saved_model)
+        model = self.load_selected_model()
+        if model:
+            self.groq_client.set_model(model)
         
+        # Screens
         self.sm = ScreenManager(transition=FadeTransition())
-        
         self.sm.add_widget(HomeScreen(self, name='home'))
         self.sm.add_widget(SettingsScreen(self, name='settings'))
         self.sm.add_widget(LoadingScreen(self, name='loading'))
@@ -1852,17 +1549,14 @@ class GameGeneratorApp(App):
         return self.sm
     
     def build_game_config(self, ai_config):
-        """Строит полный конфиг игры из ответа AI"""
-        # Значения по умолчанию
-        default_bg = [[0.1, 0.1, 0.2], [0.15, 0.1, 0.25], [0.05, 0.05, 0.1]]
-        default_player = {'shape': 'circle', 'color': [0.3, 0.7, 1], 'speed': 5, 'health': 3}
-        default_enemies = [{'name': 'Enemy', 'shape': 'circle', 'color': [1, 0.3, 0.3], 
-                           'speed': 1, 'health': 1, 'points': 10, 'behavior': 'chase'}]
+        default_bg = [[0.1, 0.1, 0.2], [0.15, 0.1, 0.25]]
+        default_player = {'shape': 'triangle', 'color': [0.3, 0.7, 1], 'speed': 5, 'health': 3}
+        default_enemies = [{'name': 'Enemy', 'color': [1, 0.3, 0.3], 'speed': 1, 'health': 1, 'points': 10}]
         default_items = [{'name': 'Health', 'color': [0.3, 1, 0.3], 'effect': 'heal', 'value': 1}]
         
         return {
-            'name': ai_config.get('name', 'AI Generated Game'),
-            'description': ai_config.get('description', ''),
+            'name': ai_config.get('name', 'AI Game'),
+            'description': ai_config.get('description', 'AI generated game'),
             'theme': ai_config.get('theme', 'space'),
             'game_type': ai_config.get('game_type', 'shooter'),
             'player': ai_config.get('player', default_player),
@@ -1870,13 +1564,14 @@ class GameGeneratorApp(App):
             'items': ai_config.get('items', default_items),
             'background_colors': ai_config.get('background_colors', default_bg),
             'difficulty_curve': ai_config.get('difficulty_curve', 'normal'),
-            'special_mechanics': ai_config.get('special_mechanics', ''),
-            'created_at': time.time()
+            'created_at': time.time(),
+            'ai_generated': True
         }
     
     def save_api_key(self, key):
         try:
-            path = os.path.join(self.data_path, 'groq_key.txt')
+            path = os.path.join(self.data_path, 'api_key.txt')
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, 'w') as f:
                 f.write(key)
         except:
@@ -1884,7 +1579,7 @@ class GameGeneratorApp(App):
     
     def load_api_key(self):
         try:
-            path = os.path.join(self.data_path, 'groq_key.txt')
+            path = os.path.join(self.data_path, 'api_key.txt')
             if os.path.exists(path):
                 with open(path, 'r') as f:
                     return f.read().strip()
@@ -1894,7 +1589,7 @@ class GameGeneratorApp(App):
     
     def save_selected_model(self, model_id):
         try:
-            path = os.path.join(self.data_path, 'selected_model.txt')
+            path = os.path.join(self.data_path, 'model.txt')
             with open(path, 'w') as f:
                 f.write(model_id)
         except:
@@ -1902,7 +1597,7 @@ class GameGeneratorApp(App):
     
     def load_selected_model(self):
         try:
-            path = os.path.join(self.data_path, 'selected_model.txt')
+            path = os.path.join(self.data_path, 'model.txt')
             if os.path.exists(path):
                 with open(path, 'r') as f:
                     return f.read().strip()
@@ -1910,13 +1605,12 @@ class GameGeneratorApp(App):
             pass
         return ""
     
-    def save_game_to_history(self, game_config):
+    def save_game_to_history(self, game):
         history = self.load_history()
-        history.append(game_config)
-        history = history[-50:]
-        
+        history.append(game)
+        history = history[-30:]
         try:
-            path = os.path.join(self.data_path, 'game_history.json')
+            path = os.path.join(self.data_path, 'history.json')
             with open(path, 'w') as f:
                 json.dump(history, f)
         except:
@@ -1924,7 +1618,7 @@ class GameGeneratorApp(App):
     
     def load_history(self):
         try:
-            path = os.path.join(self.data_path, 'game_history.json')
+            path = os.path.join(self.data_path, 'history.json')
             if os.path.exists(path):
                 with open(path, 'r') as f:
                     return json.load(f)
